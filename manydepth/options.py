@@ -19,6 +19,10 @@ class MonodepthOptions:
                                  type=str,
                                  help="path to the training data",
                                  default=os.path.join(file_dir, "kitti_data"))
+        self.parser.add_argument("--gpus",
+                                 type=int,
+                                 help="path to the training data",
+                                 default=8)
         self.parser.add_argument("--log_dir",
                                  type=str,
                                  help="log directory",
@@ -181,7 +185,7 @@ class MonodepthOptions:
                                  type=str,
                                  help="models to load",
                                  default=["encoder", "depth", "pose_encoder", "pose"])
-
+        self.parser.add_argument('--ckpt_path', default=None)
         # LOGGING options
         self.parser.add_argument("--log_frequency",
                                  type=int,

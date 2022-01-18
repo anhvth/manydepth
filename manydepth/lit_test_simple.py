@@ -16,6 +16,7 @@ import torch
 from torchvision import transforms
 
 from manydepth import networks
+from manydepth.options import MonodepthOptions
 from .layers import transformation_from_parameters
 
 
@@ -73,47 +74,40 @@ def test_simple(args):
     assert args.model_path is not None, \
         "You must specify the --model_path parameter"
 
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device(
+        "cuda") if torch.cuda.is_available() else torch.device("cpu")
     print("-> Loading model from ", args.model_path)
 
     # Loading pretrained model
-    print("   Loading pretrained encoder")
-    encoder_dict = torch.load(os.path.join(args.model_path, "encoder.pth"), map_location=device)
-    encoder = networks.ResnetEncoderMatching(18, False,
-                                             input_width=encoder_dict['width'],
-                                             input_height=encoder_dict['height'],
-                                             adaptive_bins=True,
-                                             min_depth_bin=encoder_dict['min_depth_bin'],
-                                             max_depth_bin=encoder_dict['max_depth_bin'],
-                                             depth_binning='linear',
-                                             num_depth_bins=96)
+    # print("   Loading pretrained encoder")
+    options = MonodepthOptions()
+    opts = options.parser.parse_known_args()[0]
+    opts.height = 192
+    opts.width = 512
+    # import ipdb; ipdb.set_trace()
+    from manydepth.lit_train import prepare_model
+    models = prepare_model(opts, 2)
+    ckpt = torch.load(
+        'lightning_logs/cityscape/Jan18-03:13:14/ckpts/last.ckpt')
+    state_dict = dict()
+    for k, v in ckpt['state_dict'].items():
+        if k.startswith('models.'):
+            state_dict[k.split('models.')[1]] = v
+    results = models.load_state_dict(state_dict)
+    print(results)
+    encoder = models['encoder']
+    depth_decoder = models['depth']
+    pose_enc = models['pose_encoder']
+    pose_dec = models['pose']
 
-    filtered_dict_enc = {k: v for k, v in encoder_dict.items() if k in encoder.state_dict()}
-    encoder.load_state_dict(filtered_dict_enc)
-
-    print("   Loading pretrained decoder")
-    depth_decoder = networks.DepthDecoder(num_ch_enc=encoder.num_ch_enc, scales=range(4))
-
-    loaded_dict = torch.load(os.path.join(args.model_path, "depth.pth"), map_location=device)
-    depth_decoder.load_state_dict(loaded_dict)
-
-    print("   Loading pose network")
-    pose_enc_dict = torch.load(os.path.join(args.model_path, "pose_encoder.pth"),
-                               map_location=device)
-    pose_dec_dict = torch.load(os.path.join(args.model_path, "pose.pth"), map_location=device)
-
-    pose_enc = networks.ResnetEncoder(18, False, num_input_images=2)
-    pose_dec = networks.PoseDecoder(pose_enc.num_ch_enc, num_input_features=1,
-                                    num_frames_to_predict_for=2)
-
-    pose_enc.load_state_dict(pose_enc_dict, strict=True)
-    pose_dec.load_state_dict(pose_dec_dict, strict=True)
+    from manydepth.lit_train import LitModel
 
     # Setting states of networks
     encoder.eval()
     depth_decoder.eval()
     pose_enc.eval()
     pose_dec.eval()
+
     if torch.cuda.is_available():
         encoder.cuda()
         depth_decoder.cuda()
@@ -122,15 +116,15 @@ def test_simple(args):
 
     # Load input data
     input_image, original_size = load_and_preprocess_image(args.target_image_path,
-                                                           resize_width=encoder_dict['width'],
-                                                           resize_height=encoder_dict['height'])
+                                                           resize_width=opts.width,
+                                                           resize_height=opts.height)
 
     source_image, _ = load_and_preprocess_image(args.source_image_path,
-                                                resize_width=encoder_dict['width'],
-                                                resize_height=encoder_dict['height'])
+                                                resize_width=opts.width,
+                                                resize_height=opts.height)
     K, invK = load_and_preprocess_intrinsics(args.intrinsics_json_path,
-                                             resize_width=encoder_dict['width'],
-                                             resize_height=encoder_dict['height'])
+                                             resize_width=opts.width,
+                                             resize_height=opts.height)
 
     with torch.no_grad():
 
@@ -138,20 +132,23 @@ def test_simple(args):
         pose_inputs = [source_image, input_image]
         pose_inputs = [pose_enc(torch.cat(pose_inputs, 1))]
         axisangle, translation = pose_dec(pose_inputs)
-        pose = transformation_from_parameters(axisangle[:, 0], translation[:, 0], invert=True)
+        pose = transformation_from_parameters(
+            axisangle[:, 0], translation[:, 0], invert=True)
 
         if args.mode == 'mono':
             pose *= 0  # zero poses are a signal to the encoder not to construct a cost volume
             source_image *= 0
 
         # Estimate depth
+        # import ipdb; ipdb.set_trace()
         output, lowest_cost, _ = encoder(current_image=input_image,
-                                         lookup_images=source_image.unsqueeze(1),
+                                         lookup_images=source_image.unsqueeze(
+                                             1),
                                          poses=pose.unsqueeze(1),
                                          K=K,
                                          invK=invK,
-                                         min_depth_bin=encoder_dict['min_depth_bin'],
-                                         max_depth_bin=encoder_dict['max_depth_bin'])
+                                         min_depth_bin=opts.min_depth,
+                                         max_depth_bin=opts.max_depth)
 
         output = depth_decoder(output)
 
@@ -163,15 +160,18 @@ def test_simple(args):
         # Saving numpy file
         directory, filename = os.path.split(args.target_image_path)
         output_name = os.path.splitext(filename)[0]
-        name_dest_npy = os.path.join(directory, "{}_disp_{}.npy".format(output_name, args.mode))
+        name_dest_npy = os.path.join(
+            directory, "{}_disp_{}.npy".format(output_name, args.mode))
         np.save(name_dest_npy, sigmoid_output.cpu().numpy())
 
         # Saving colormapped depth image and cost volume argmin
         for plot_name, toplot in (('costvol_min', lowest_cost), ('disp', sigmoid_output_resized)):
             toplot = toplot.squeeze()
-            normalizer = mpl.colors.Normalize(vmin=toplot.min(), vmax=np.percentile(toplot, 95))
+            normalizer = mpl.colors.Normalize(
+                vmin=toplot.min(), vmax=np.percentile(toplot, 95))
             mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
-            colormapped_im = (mapper.to_rgba(toplot)[:, :, :3] * 255).astype(np.uint8)
+            colormapped_im = (mapper.to_rgba(toplot)[
+                              :, :, :3] * 255).astype(np.uint8)
             im = pil.fromarray(colormapped_im)
 
             name_dest_im = os.path.join(directory,

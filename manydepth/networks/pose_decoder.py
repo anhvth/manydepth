@@ -7,7 +7,7 @@
 import torch
 import torch.nn as nn
 from collections import OrderedDict
-
+from .utils import tuple2dictname
 
 class PoseDecoder(nn.Module):
     def __init__(self, num_ch_enc, num_input_features, num_frames_to_predict_for=None, stride=1):
@@ -20,11 +20,11 @@ class PoseDecoder(nn.Module):
             num_frames_to_predict_for = num_input_features - 1
         self.num_frames_to_predict_for = num_frames_to_predict_for
 
-        self.convs = OrderedDict()
-        self.convs[("squeeze")] = nn.Conv2d(self.num_ch_enc[-1], 256, 1)
-        self.convs[("pose", 0)] = nn.Conv2d(num_input_features * 256, 256, 3, stride, 1)
-        self.convs[("pose", 1)] = nn.Conv2d(256, 256, 3, stride, 1)
-        self.convs[("pose", 2)] = nn.Conv2d(256, 6 * num_frames_to_predict_for, 1)
+        self.convs = nn.ModuleDict()
+        self.convs[tuple2dictname("squeeze")] = nn.Conv2d(self.num_ch_enc[-1], 256, 1)
+        self.convs[tuple2dictname("pose", 0)] = nn.Conv2d(num_input_features * 256, 256, 3, stride, 1)
+        self.convs[tuple2dictname("pose", 1)] = nn.Conv2d(256, 256, 3, stride, 1)
+        self.convs[tuple2dictname("pose", 2)] = nn.Conv2d(256, 6 * num_frames_to_predict_for, 1)
 
         self.relu = nn.ReLU()
 
@@ -38,7 +38,7 @@ class PoseDecoder(nn.Module):
 
         out = cat_features
         for i in range(3):
-            out = self.convs[("pose", i)](out)
+            out = self.convs[tuple2dictname("pose", i)](out)
             if i != 2:
                 out = self.relu(out)
 

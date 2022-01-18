@@ -299,10 +299,10 @@ def evaluate(opt):
 
         print("-> No ground truth is available for the KITTI benchmark, so not evaluating. Done.")
         quit()
-
     if opt.eval_split == 'cityscapes':
         print('loading cityscapes gt depths individually due to their combined size!')
         gt_depths = os.path.join(splits_dir, opt.eval_split, "gt_depths")
+        assert os.path.exists(gt_depths), f'{gt_depths} does not exist'
     else:
         gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
         gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)["data"]

@@ -13,6 +13,9 @@ import matplotlib as mpl
 import matplotlib.cm as cm
 
 import torch
+from glob import glob
+import os.path as osp
+from tqdm import tqdm
 from torchvision import transforms
 
 from manydepth import networks
@@ -23,10 +26,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Simple testing funtion for ManyDepth models.')
 
-    parser.add_argument('--target_image_path', type=str,
-                        help='path to a test image to predict for', required=True)
-    parser.add_argument('--source_image_path', type=str,
-                        help='path to a previous image in the video sequence', required=True)
+    parser.add_argument('--input_dir', required=True, help='Path to images dir or video')
+
     parser.add_argument('--intrinsics_json_path', type=str,
                         help='path to a json file containing a normalised 3x3 intrinsics matrix',
                         required=True)
@@ -121,64 +122,71 @@ def test_simple(args):
         pose_dec.cuda()
 
     # Load input data
-    input_image, original_size = load_and_preprocess_image(args.target_image_path,
-                                                           resize_width=encoder_dict['width'],
-                                                           resize_height=encoder_dict['height'])
+    paths = glob(osp.join(args.input_dir, '*.jpg'))
+    paths = list(sorted(paths))
 
-    source_image, _ = load_and_preprocess_image(args.source_image_path,
+    for i in tqdm(range(1, len(paths))):
+        target_image_path = paths[i]
+        source_image_path = paths[i-1]
+
+        input_image, original_size = load_and_preprocess_image(target_image_path,
+                                                            resize_width=encoder_dict['width'],
+                                                            resize_height=encoder_dict['height'])
+
+        source_image, _ = load_and_preprocess_image(source_image_path,
+                                                    resize_width=encoder_dict['width'],
+                                                    resize_height=encoder_dict['height'])
+        K, invK = load_and_preprocess_intrinsics(args.intrinsics_json_path,
                                                 resize_width=encoder_dict['width'],
                                                 resize_height=encoder_dict['height'])
-    K, invK = load_and_preprocess_intrinsics(args.intrinsics_json_path,
-                                             resize_width=encoder_dict['width'],
-                                             resize_height=encoder_dict['height'])
 
-    with torch.no_grad():
+        with torch.no_grad():
 
-        # Estimate poses
-        pose_inputs = [source_image, input_image]
-        pose_inputs = [pose_enc(torch.cat(pose_inputs, 1))]
-        axisangle, translation = pose_dec(pose_inputs)
-        pose = transformation_from_parameters(axisangle[:, 0], translation[:, 0], invert=True)
+            # Estimate poses
+            pose_inputs = [source_image, input_image]
+            pose_inputs = [pose_enc(torch.cat(pose_inputs, 1))]
+            axisangle, translation = pose_dec(pose_inputs)
+            pose = transformation_from_parameters(axisangle[:, 0], translation[:, 0], invert=True)
 
-        if args.mode == 'mono':
-            pose *= 0  # zero poses are a signal to the encoder not to construct a cost volume
-            source_image *= 0
+            if args.mode == 'mono':
+                pose *= 0  # zero poses are a signal to the encoder not to construct a cost volume
+                source_image *= 0
 
-        # Estimate depth
-        output, lowest_cost, _ = encoder(current_image=input_image,
-                                         lookup_images=source_image.unsqueeze(1),
-                                         poses=pose.unsqueeze(1),
-                                         K=K,
-                                         invK=invK,
-                                         min_depth_bin=encoder_dict['min_depth_bin'],
-                                         max_depth_bin=encoder_dict['max_depth_bin'])
+            # Estimate depth
+            output, lowest_cost, _ = encoder(current_image=input_image,
+                                            lookup_images=source_image.unsqueeze(1),
+                                            poses=pose.unsqueeze(1),
+                                            K=K,
+                                            invK=invK,
+                                            min_depth_bin=encoder_dict['min_depth_bin'],
+                                            max_depth_bin=encoder_dict['max_depth_bin'])
 
-        output = depth_decoder(output)
+            output = depth_decoder(output)
 
-        sigmoid_output = output[("disp", 0)]
-        sigmoid_output_resized = torch.nn.functional.interpolate(
-            sigmoid_output, original_size, mode="bilinear", align_corners=False)
-        sigmoid_output_resized = sigmoid_output_resized.cpu().numpy()[:, 0]
+            sigmoid_output = output[("disp", 0)]
+            sigmoid_output_resized = torch.nn.functional.interpolate(
+                sigmoid_output, original_size, mode="bilinear", align_corners=False)
+            sigmoid_output_resized = sigmoid_output_resized.cpu().numpy()[:, 0]
 
-        # Saving numpy file
-        directory, filename = os.path.split(args.target_image_path)
-        output_name = os.path.splitext(filename)[0]
-        name_dest_npy = os.path.join(directory, "{}_disp_{}.npy".format(output_name, args.mode))
-        np.save(name_dest_npy, sigmoid_output.cpu().numpy())
+            # Saving numpy file
+            directory, filename = os.path.split(target_image_path)
+            output_name = os.path.splitext(filename)[0]
+            name_dest_npy = os.path.join(directory, "{}_disp_{}.npy".format(output_name, args.mode))
+            np.save(name_dest_npy, sigmoid_output.cpu().numpy())
 
-        # Saving colormapped depth image and cost volume argmin
-        for plot_name, toplot in (('costvol_min', lowest_cost), ('disp', sigmoid_output_resized)):
-            toplot = toplot.squeeze()
-            normalizer = mpl.colors.Normalize(vmin=toplot.min(), vmax=np.percentile(toplot, 95))
-            mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
-            colormapped_im = (mapper.to_rgba(toplot)[:, :, :3] * 255).astype(np.uint8)
-            im = pil.fromarray(colormapped_im)
+            # Saving colormapped depth image and cost volume argmin
+            for plot_name, toplot in (('costvol_min', lowest_cost), ('disp', sigmoid_output_resized)):
+                toplot = toplot.squeeze()
+                normalizer = mpl.colors.Normalize(vmin=toplot.min(), vmax=np.percentile(toplot, 95))
+                mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+                colormapped_im = (mapper.to_rgba(toplot)[:, :, :3] * 255).astype(np.uint8)
+                im = pil.fromarray(colormapped_im)
 
-            name_dest_im = os.path.join(directory,
-                                        "{}_{}_{}.jpeg".format(output_name, plot_name, args.mode))
-            im.save(name_dest_im)
+                name_dest_im = os.path.join(directory,
+                                            "{}_{}_{}.jpeg".format(output_name, plot_name, args.mode))
+                im.save(name_dest_im)
 
-            print("-> Saved output image to {}".format(name_dest_im))
+                print("-> Saved output image to {}".format(name_dest_im))
 
     print('-> Done!')
 

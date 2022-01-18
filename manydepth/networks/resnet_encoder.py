@@ -116,8 +116,8 @@ class ResnetEncoderMatching(nn.Module):
         self.projector = Project3D(batch_size=self.num_depth_bins,
                                    height=self.matching_height,
                                    width=self.matching_width)
-
-        self.compute_depth_bins(min_depth_bin, max_depth_bin)
+        if not self.adaptive_bins:
+            self.compute_depth_bins(min_depth_bin, max_depth_bin)
 
         self.prematching_conv = nn.Sequential(nn.Conv2d(64, out_channels=16,
                                                         kernel_size=1, stride=1, padding=0),
@@ -130,7 +130,7 @@ class ResnetEncoderMatching(nn.Module):
                                          nn.ReLU(inplace=True)
                                          )
 
-    def compute_depth_bins(self, min_depth_bin, max_depth_bin):
+    def compute_depth_bins(self, min_depth_bin, max_depth_bin, device='cpu'):
         """Compute the depths bins used to build the cost volume. Bins will depend upon
         self.depth_binning, to either be linear in depth (linear) or linear in inverse depth
         (inverse)"""
@@ -151,8 +151,7 @@ class ResnetEncoderMatching(nn.Module):
             depth = torch.ones((1, self.matching_height, self.matching_width)) * depth
             self.warp_depths.append(depth)
         self.warp_depths = torch.stack(self.warp_depths, 0).float()
-        if self.is_cuda:
-            self.warp_depths = self.warp_depths.cuda()
+        self.warp_depths = self.warp_depths.to(device)
 
     def match_features(self, current_feats, lookup_feats, relative_poses, K, invK):
         """Compute a cost volume based on L1 difference between current_feats and lookup_feats.
@@ -275,7 +274,7 @@ class ResnetEncoderMatching(nn.Module):
         # feature extraction on lookup images - disable gradients to save memory
         with torch.no_grad():
             if self.adaptive_bins:
-                self.compute_depth_bins(min_depth_bin, max_depth_bin)
+                self.compute_depth_bins(min_depth_bin, max_depth_bin, device=current_image.device)
 
             batch_size, num_frames, chns, height, width = lookup_images.shape
             lookup_images = lookup_images.reshape(batch_size * num_frames, chns, height, width)
