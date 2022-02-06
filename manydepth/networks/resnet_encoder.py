@@ -136,15 +136,19 @@ class ResnetEncoderMatching(nn.Module):
         (inverse)"""
 
         if self.depth_binning == 'inverse':
-            self.depth_bins = 1 / np.linspace(1 / max_depth_bin,
-                                              1 / min_depth_bin,
-                                              self.num_depth_bins)[::-1]  # maintain depth order
+            raise NotImplementedError
+            # self.depth_bins = 1 / np.linspace(1 / max_depth_bin,
+            #                                   1 / min_depth_bin,
+            #                                   self.num_depth_bins)[::-1]  # maintain depth order
 
         elif self.depth_binning == 'linear':
-            self.depth_bins = np.linspace(min_depth_bin, max_depth_bin, self.num_depth_bins)
+            if isinstance(min_depth_bin, float):
+                self.depth_bins = np.linspace(min_depth_bin, max_depth_bin, self.num_depth_bins)
+            else:
+                self.depth_bins = torch.linspace(min_depth_bin.item(), max_depth_bin.item(), self.num_depth_bins)
         else:
             raise NotImplementedError
-        self.depth_bins = torch.from_numpy(self.depth_bins).float()
+        # self.depth_bins = torch.from_numpy(self.depth_bins).float()
 
         self.warp_depths = []
         for depth in self.depth_bins:

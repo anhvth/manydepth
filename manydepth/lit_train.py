@@ -134,36 +134,25 @@ class LitModel(LightningModule):
         self.train_teacher_and_pose = not self.opt.freeze_teacher_and_pose
         if self.train_teacher_and_pose:
             print('using adaptive depth binning!')
-            self.min_depth_tracker = 0.1
-            self.max_depth_tracker = 10.0
+            self.min_depth_tracker = nn.Parameter(torch.Tensor([0.1]), False)
+            self.max_depth_tracker = nn.Parameter(torch.Tensor([10.0]), False)
         else:
             print('fixing pose network and monocular network!')
 
         # MODEL SETUP
 
-        self.models = prepare_model(opts, self.num_pose_frames)
+        self.models = prepare_model(self.opt, self.num_pose_frames)
 
-        # if self.train_teacher_and_pose:
-        #     self.parameters_to_train += list(
-        #         self.models["pose_encoder"].parameters())
-        #     self.parameters_to_train += list(self.models["pose"].parameters())
+        # if self.opt.load_weights_folder is not None:
+        #     self.load_model()
 
-        if self.opt.load_weights_folder is not None:
-            self.load_model()
-
-        if self.opt.mono_weights_folder is not None:
-            self.load_mono_model()
+        # if self.opt.mono_weights_folder is not None:
+        #     self.load_mono_model()
 
         print("Training model named:\n  ", self.opt.model_name)
         print("Models and tensorboard events files are saved to:\n  ",
               self.opt.log_dir)
 
-        # self.num_total_steps = num_train_samples // self.opt.batch_size * self.opt.num_epochs
-
-        # self.writers = {}
-        # for mode in ["train", "val"]:
-        #     self.writers[mode] = SummaryWriter(
-        #         os.path.join(self.log_path, mode))
 
         if not self.opt.no_ssim:
             self.ssim = SSIM()
@@ -187,8 +176,8 @@ class LitModel(LightningModule):
             "de/abs_rel", "de/sq_rel", "de/rms", "de/log_rms", "da/a1", "da/a2", "da/a3"]
 
         print("Using split:\n  ", self.opt.split)
-        print("There are {:d} training items and {:d} validation items\n".format(
-            len(train_dataset), len(val_dataset)))
+        # print("There are {:d} training items and {:d} validation items\n".format(
+        #     len(train_dataset), len(val_dataset)))
 
         self.save_opts()
 
@@ -241,11 +230,11 @@ class LitModel(LightningModule):
             # count_trainable_params(self.models)
             for model_name in self.models.keys():
                 if model_name in ['encoder', 'depth']:
-                    print('Train ', model_name)
+                    logger.info('Train ', model_name)
                     for param in self.models[model_name].parameters():
                         param.requires_grad_ = True
                 else:
-                    print('Frozen', model_name)
+                    logger.info('Frozen', model_name)
                     for param in self.models[model_name].parameters():
                         param.requires_grad_ = False
             count_trainable_params(self.models)
@@ -415,15 +404,15 @@ class LitModel(LightningModule):
         max_depth = outputs[('mono_depth', 0, 0)
                             ].detach().max(-1)[0].max(-1)[0]
 
-        min_depth = min_depth.mean().cpu().item()
-        max_depth = max_depth.mean().cpu().item()
+        min_depth = min_depth.mean()#.cpu().item()
+        max_depth = max_depth.mean()#.cpu().item()
 
         # increase range slightly
         min_depth = max(self.opt.min_depth, min_depth * 0.9)
         max_depth = max_depth * 1.1
 
-        self.max_depth_tracker = self.max_depth_tracker * 0.99 + max_depth * 0.01
-        self.min_depth_tracker = self.min_depth_tracker * 0.99 + min_depth * 0.01
+        self.max_depth_tracker = nn.Parameter(self.max_depth_tracker * 0.99 + max_depth * 0.01, False)
+        self.min_depth_tracker = nn.Parameter(self.min_depth_tracker * 0.99 + min_depth * 0.01, False)
 
     def predict_poses(self, inputs, features=None):
         """Predict poses between input frames for monocular sequences.
@@ -437,28 +426,27 @@ class LitModel(LightningModule):
             # select what features the pose network takes as input
             pose_feats = {f_i: inputs["color_aug", f_i, 0]
                           for f_i in self.opt.frame_ids}
-            for f_i in self.opt.frame_ids[1:]:
-                if f_i != "s":
+            for frame_index in self.opt.frame_ids[1:]:
+                if frame_index != "s":
                     # To maintain ordering we always pass frames in temporal order
-                    if f_i < 0:
-                        pose_inputs = [pose_feats[f_i], pose_feats[0]]
+                    if frame_index < 0:
+                        pose_inputs = [pose_feats[frame_index], pose_feats[0]]
                     else:
-                        pose_inputs = [pose_feats[0], pose_feats[f_i]]
+                        pose_inputs = [pose_feats[0], pose_feats[frame_index]]
 
-                    pose_inputs = [self.models["pose_encoder"]
-                                   (torch.cat(pose_inputs, 1))]
+                    pose_inputs = [self.models["pose_encoder"](torch.cat(pose_inputs, 1))]
 
                     axisangle, translation = self.models["pose"](pose_inputs)
-                    outputs[("axisangle", 0, f_i)] = axisangle
-                    outputs[("translation", 0, f_i)] = translation
+                    outputs[("axisangle", 0, frame_index)] = axisangle
+                    outputs[("translation", 0, frame_index)] = translation
 
                     # Invert the matrix if the frame id is negative
-                    outputs[("cam_T_cam", 0, f_i)] = transformation_from_parameters(
-                        axisangle[:, 0], translation[:, 0], invert=(f_i < 0))
+                    outputs[("cam_T_cam", 0, frame_index)] = transformation_from_parameters(
+                        axisangle[:, 0], translation[:, 0], invert=(frame_index < 0))
 
             # now we need poses for matching - compute without gradients
-            pose_feats = {f_i: inputs["color_aug", f_i, 0]
-                          for f_i in self.matching_ids}
+            pose_feats = {frame_index: inputs["color_aug", frame_index, 0]
+                          for frame_index in self.matching_ids}
             with torch.no_grad():
                 # compute pose from 0->-1, -1->-2, -2->-3 etc and multiply to find 0->-3
                 for fi in self.matching_ids[1:]:
@@ -545,7 +533,7 @@ class LitModel(LightningModule):
 
             for i, frame_id in enumerate(self.opt.frame_ids[1:]):
 
-                T = outputs[("cam_T_cam", 0, frame_id)]
+                T = outputs[("cam_T_cam", 0, frame_id)] # 4x4
                 if is_multi:
                     # don't update posenet based on multi frame prediction
                     T = T.detach()
@@ -559,7 +547,7 @@ class LitModel(LightningModule):
 
                 outputs[("color", frame_id, scale)] = F.grid_sample(
                     inputs[("color", frame_id, source_scale)],
-                    outputs[("sample", frame_id, scale)],
+                    pix_coords,
                     padding_mode="border", align_corners=True)
 
                 if not self.opt.disable_automasking:
@@ -867,69 +855,68 @@ class LitModel(LightningModule):
         save_path = os.path.join(save_folder, "{}.pth".format("adam"))
         torch.save(self.model_optimizer.state_dict(), save_path)
 
-    def load_mono_model(self):
+    # def load_mono_model(self):
+    #     model_list = ['pose_encoder', 'pose', 'mono_encoder', 'mono_depth']
+    #     for n in model_list:
+    #         print('loading {}'.format(n))
+    #         path = os.path.join(
+    #             self.opt.mono_weights_folder, "{}.pth".format(n))
+    #         model_dict = self.models[n].state_dict()
+    #         pretrained_dict = torch.load(path)
 
-        model_list = ['pose_encoder', 'pose', 'mono_encoder', 'mono_depth']
-        for n in model_list:
-            print('loading {}'.format(n))
-            path = os.path.join(
-                self.opt.mono_weights_folder, "{}.pth".format(n))
-            model_dict = self.models[n].state_dict()
-            pretrained_dict = torch.load(path)
+    #         pretrained_dict = {k: v for k,
+    #                            v in pretrained_dict.items() if k in model_dict}
+    #         model_dict.update(pretrained_dict)
+    #         self.models[n].load_state_dict(model_dict)
 
-            pretrained_dict = {k: v for k,
-                               v in pretrained_dict.items() if k in model_dict}
-            model_dict.update(pretrained_dict)
-            self.models[n].load_state_dict(model_dict)
+    # def load_model(self):
+    #     """Load model(s) from disk
+    #     """
+    #     self.opt.load_weights_folder = os.path.expanduser(
+    #         self.opt.load_weights_folder)
 
-    def load_model(self):
-        """Load model(s) from disk
-        """
-        self.opt.load_weights_folder = os.path.expanduser(
-            self.opt.load_weights_folder)
+    #     assert os.path.isdir(self.opt.load_weights_folder), \
+    #         "Cannot find folder {}".format(self.opt.load_weights_folder)
+    #     print("loading model from folder {}".format(
+    #         self.opt.load_weights_folder))
 
-        assert os.path.isdir(self.opt.load_weights_folder), \
-            "Cannot find folder {}".format(self.opt.load_weights_folder)
-        print("loading model from folder {}".format(
-            self.opt.load_weights_folder))
+    #     for n in self.opt.models_to_load:
+    #         print("Loading {} weights...".format(n))
+    #         path = os.path.join(
+    #             self.opt.load_weights_folder, "{}.pth".format(n))
+    #         model_dict = self.models[n].state_dict()
+    #         pretrained_dict = torch.load(path)
 
-        for n in self.opt.models_to_load:
-            print("Loading {} weights...".format(n))
-            path = os.path.join(
-                self.opt.load_weights_folder, "{}.pth".format(n))
-            model_dict = self.models[n].state_dict()
-            pretrained_dict = torch.load(path)
+    #         if n == 'encoder':
+    #             min_depth_bin = pretrained_dict.get('min_depth_bin')
+    #             max_depth_bin = pretrained_dict.get('max_depth_bin')
+    #             print('min depth', min_depth_bin, 'max_depth', max_depth_bin)
+    #             if min_depth_bin is not None:
+    #                 # recompute bins
+    #                 print('setting depth bins!')
+    #                 self.models['encoder'].compute_depth_bins(
+    #                     min_depth_bin, max_depth_bin)
 
-            if n == 'encoder':
-                min_depth_bin = pretrained_dict.get('min_depth_bin')
-                max_depth_bin = pretrained_dict.get('max_depth_bin')
-                print('min depth', min_depth_bin, 'max_depth', max_depth_bin)
-                if min_depth_bin is not None:
-                    # recompute bins
-                    print('setting depth bins!')
-                    self.models['encoder'].compute_depth_bins(
-                        min_depth_bin, max_depth_bin)
+    #                 self.min_depth_tracker = min_depth_bin
+    #                 self.max_depth_tracker = max_depth_bin
 
-                    self.min_depth_tracker = min_depth_bin
-                    self.max_depth_tracker = max_depth_bin
+    #         pretrained_dict = {k: v for k,
+    #                            v in pretrained_dict.items() if k in model_dict}
+    #         model_dict.update(pretrained_dict)
+    #         self.models[n].load_state_dict(model_dict)
 
-            pretrained_dict = {k: v for k,
-                               v in pretrained_dict.items() if k in model_dict}
-            model_dict.update(pretrained_dict)
-            self.models[n].load_state_dict(model_dict)
-
-        # loading adam state
-        optimizer_load_path = os.path.join(
-            self.opt.load_weights_folder, "adam.pth")
-        if os.path.isfile(optimizer_load_path):
-            try:
-                print("Loading Adam weights")
-                optimizer_dict = torch.load(optimizer_load_path)
-                self.model_optimizer.load_state_dict(optimizer_dict)
-            except ValueError:
-                print("Can't load Adam - using random")
-        else:
-            print("Cannot find Adam weights so Adam is randomly initialized")
+    #     # loading adam state
+    #     optimizer_load_path = os.path.join(
+    #         self.opt.load_weights_folder, "adam.pth")
+    #     if os.path.isfile(optimizer_load_path):
+    #         try:
+    #             print("Loading Adam weights")
+    #             optimizer_dict = torch.load(optimizer_load_path)
+    #             self.model_optimizer.load_state_dict(optimizer_dict)
+    #         except ValueError:
+    #             print("Can't load Adam - using random")
+    #     else:
+    #         print("Cannot find Adam weights so Adam is randomly initialized")
 
 
 def get_num_gpus(gpus):
@@ -959,6 +946,7 @@ if __name__ == "__main__":
                      "cityscapes_preprocessed": datasets.CityscapesPreprocessedDataset,
                      "kitti_odom": datasets.KITTIOdomDataset}
     dataset = datasets_dict[opts.dataset]
+    
     # check the frames we need the dataloader to load
     frames_to_load = opts.frame_ids.copy()
     matching_ids = [0]
@@ -969,27 +957,42 @@ if __name__ == "__main__":
         if idx not in frames_to_load:
             frames_to_load.append(idx)
     print('Loading frames: {}'.format(frames_to_load))
+    if os.environ.get('DEBUG', '0') == '0':
+        train_dataset = dataset(
+            opts.data_path, train_filenames, opts.height, opts.width,
+            frames_to_load, 4, is_train=True, img_ext=img_ext)
 
-    train_dataset = dataset(
-        opts.data_path, train_filenames, opts.height, opts.width,
-        frames_to_load, 4, is_train=True, img_ext=img_ext)
+        global_batch_size = opts.batch_size*get_num_gpus(gpus)
+        train_loader = DataLoader(
+            train_dataset, global_batch_size, True,
+            num_workers=opts.num_workers, pin_memory=True, drop_last=True,
+            worker_init_fn=seed_worker)
 
-    global_batch_size = opts.batch_size*get_num_gpus(gpus)
-    train_loader = DataLoader(
-        train_dataset, global_batch_size, True,
-        num_workers=opts.num_workers, pin_memory=True, drop_last=True,
-        worker_init_fn=seed_worker)
+        val_dataset = dataset(
+            opts.data_path, val_filenames, opts.height, opts.width,
+            frames_to_load, 4, is_train=False, img_ext=img_ext)
 
-    val_dataset = dataset(
-        opts.data_path, val_filenames, opts.height, opts.width,
-        frames_to_load, 4, is_train=False, img_ext=img_ext)
+        val_loader = DataLoader(
+            val_dataset, global_batch_size, False,
+            num_workers=opts.num_workers, pin_memory=True, drop_last=True)
+        lit_model = LitModel(opts, matching_ids)
+        lit_trainer.fit(lit_model, train_loader, val_loader,
+                        ckpt_path=opts.ckpt_path)
 
-    # val_dataset.filenames = val_dataset.filenames[:200]
-    val_loader = DataLoader(
-        val_dataset, global_batch_size, False,
-        num_workers=opts.num_workers, pin_memory=True, drop_last=True)
+    else:
+        gpus = 1
+        opts.batch_size = 4
+        global_batch_size = opts.batch_size*get_num_gpus(gpus)
+        val_dataset = dataset(
+            opts.data_path, val_filenames, opts.height, opts.width,
+            frames_to_load, 4, is_train=False, img_ext=img_ext)
 
-    lit_model = LitModel(opts, matching_ids)
-    lit_trainer.fit(lit_model, train_loader, val_loader,
-                    ckpt_path=opts.ckpt_path)
-    # lit_trainer.fit(lit_model, val_loader, val_loader)
+        val_dataset.filenames = val_dataset.filenames[:100]
+        item = val_dataset.__getitem__(0)
+        val_loader = DataLoader(
+            val_dataset, global_batch_size, False,
+            num_workers=opts.num_workers, pin_memory=True, drop_last=True)
+
+        lit_model = LitModel(opts, matching_ids)
+        lit_trainer.fit(lit_model, val_loader, val_loader,
+                        ckpt_path=opts.ckpt_path)

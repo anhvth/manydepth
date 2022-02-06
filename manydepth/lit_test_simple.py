@@ -93,6 +93,10 @@ def test_simple(args):
     for k, v in ckpt['state_dict'].items():
         if k.startswith('models.'):
             state_dict[k.split('models.')[1]] = v
+
+    ks = [k for k in state_dict.keys() if k.startswith('pose.net')]
+    for k in ks:
+        del state_dict[k]
     results = models.load_state_dict(state_dict)
     print(results)
     encoder = models['encoder']

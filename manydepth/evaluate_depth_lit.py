@@ -100,27 +100,7 @@ def evaluate(opt):
             encoder_class = networks.ResnetEncoderMatching
 
         # encoder_dict = torch.load(encoder_path)
-        import ipdb; ipdb.set_trace()
-        try:
-            HEIGHT, WIDTH = encoder_dict['height'], encoder_dict['width']
-        except KeyError:
-            print('No "height" or "width" keys found in the encoder state_dict, resorting to '
-                  'using command line values!')
-            HEIGHT, WIDTH = opt.height, opt.width
 
-        if opt.eval_split == 'cityscapes':
-            dataset = datasets.CityscapesEvalDataset(opt.data_path, filenames,
-                                                     HEIGHT, WIDTH,
-                                                     frames_to_load, 4,
-                                                     is_train=False)
-
-        else:
-            dataset = datasets.KITTIRAWDataset(opt.data_path, filenames,
-                                               encoder_dict['height'], encoder_dict['width'],
-                                               frames_to_load, 4,
-                                               is_train=False)
-        dataloader = DataLoader(dataset, opt.batch_size, shuffle=False, num_workers=opt.num_workers,
-                                pin_memory=True, drop_last=False)
 
         # setup models
         # if opt.eval_teacher:
@@ -148,9 +128,12 @@ def evaluate(opt):
             # min_depth_bin = encoder_dict.get('min_depth_bin')
             # max_depth_bin = encoder_dict.get('max_depth_bin')
             
-        from manydepth.lit_train import prepare_model
+        from manydepth.lit_train import LitModel
         opts = options.parse()
-        models = prepare_model(opts, 2)
+        lit_model = LitModel(opts, [0, -1])
+        lit_state_dict = torch.load('lightning_logs/cityscape/Jan31-18:37:05/ckpts/epoch=38-loss_val=0.07.ckpt')
+        lit_model.load_state_dict(lit_state_dict['state_dict'])
+        models = lit_model.models
         pose_enc = models['pose_encoder']
         pose_dec = models['pose']
         # import ipdb; ipdb.set_trace()
@@ -182,6 +165,27 @@ def evaluate(opt):
             depth_decoder.cuda()
 
         pred_disps = []
+        # import ipdb; ipdb.set_trace()
+        # try:
+        #     HEIGHT, WIDTH = encoder_dict['height'], encoder_dict['width']
+        # except KeyError:
+        #     print('No "height" or "width" keys found in the encoder state_dict, resorting to '
+        #           'using command line values!')
+        HEIGHT, WIDTH = opt.height, opt.width
+
+        if opt.eval_split == 'cityscapes':
+            dataset = datasets.CityscapesEvalDataset(opt.data_path, filenames,
+                                                     HEIGHT, WIDTH,
+                                                     frames_to_load, 4,
+                                                     is_train=False)
+
+        else:
+            dataset = datasets.KITTIRAWDataset(opt.data_path, filenames,
+                                               encoder_dict['height'], encoder_dict['width'],
+                                               frames_to_load, 4,
+                                               is_train=False)
+        dataloader = DataLoader(dataset, opt.batch_size, shuffle=False, num_workers=opt.num_workers,
+                                pin_memory=True, drop_last=False)
 
         print("-> Computing predictions with size {}x{}".format(HEIGHT, WIDTH))
 

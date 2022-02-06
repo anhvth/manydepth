@@ -1,6 +1,6 @@
 # CUDA_VISIBLE_DEVICES=<your_desired_GPU> \
-# python -m manydepth.train \
-python -m debugpy --listen 5678 --wait-for-client -m manydepth.train \
+# python -m debugpy --listen 5678 --wait-for-client -m manydepth.train \
+python -m manydepth.train \
     --data_path /data/cityscapes/dump/ \
     --log_dir work_dirs/cityscapes  \
     --model_name cityscape \

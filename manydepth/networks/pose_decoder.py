@@ -28,7 +28,7 @@ class PoseDecoder(nn.Module):
 
         self.relu = nn.ReLU()
 
-        self.net = nn.ModuleList(list(self.convs.values()))
+        # self.net = nn.ModuleList(list(self.convs.values()))
 
     def forward(self, input_features):
         last_features = [f[-1] for f in input_features]

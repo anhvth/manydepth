@@ -108,6 +108,7 @@ def test_simple(args):
 
     pose_enc.load_state_dict(pose_enc_dict, strict=True)
     pose_dec.load_state_dict(pose_dec_dict, strict=True)
+    
 
     # Setting states of networks
     encoder.eval()

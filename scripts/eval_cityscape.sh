@@ -1,3 +1,4 @@
+alias python=/home/av/.conda/envs/manydepth/bin/python
 python -m manydepth.evaluate_depth \
     --data_path /data/cityscapes/ \
     --load_weights_folder CityScapes_MR/ \
