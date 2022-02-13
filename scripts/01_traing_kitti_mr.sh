@@ -7,7 +7,7 @@ if [ $DEBUG == 1 ]; then
     export CUDA_VISIBLE_DEVICES=1 
     python -m debugpy --listen 5678 --wait-for-client -m manydepth.train \
         --data_path /data/kitti \
-        --log_dir ./log_dir/  \
+        --log_dir ./log_dir/debug/  \
         --model_name 01_kitti_mr \
         --num_workers 0
 else
