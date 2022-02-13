@@ -1,10 +1,10 @@
-export CUDA_VISIBLE_DEVICES=0 
+#!/bin/bash
 mkdir -p ./log_dir
 
 
 # ps aux | grep aux 5678 | awk '{print $2}' | xargs kill -9
-if [[ $DEBUG==1]]
-then 
+if [ $DEBUG == 1 ]; then 
+    export CUDA_VISIBLE_DEVICES=1 
     python -m debugpy --listen 5678 --wait-for-client -m manydepth.train \
         --data_path /data/kitti \
         --log_dir ./log_dir/  \
