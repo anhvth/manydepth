@@ -781,7 +781,7 @@ class Trainer:
                 consistency_target = colormap(outputs["consistency_target/0"][j])
                 writer.add_image(
                     "consistency_target/{}".format(j),
-                    consistency_target, self.step)
+                    consistency_target[0], self.step)
 
     def save_opts(self):
         """Save options to disk so we know what we ran this experiment with
