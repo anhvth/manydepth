@@ -160,6 +160,7 @@ def test_simple(args):
         sigmoid_output_resized = torch.nn.functional.interpolate(
             sigmoid_output, original_size, mode="bilinear", align_corners=False)
         sigmoid_output_resized = sigmoid_output_resized.cpu().numpy()[:, 0]
+        depth
 
         # Saving numpy file
         directory, filename = os.path.split(args.target_image_path)

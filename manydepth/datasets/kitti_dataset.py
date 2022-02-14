@@ -68,6 +68,9 @@ class KITTIDataset(MonoDataset):
             color = color.transpose(pil.FLIP_LEFT_RIGHT)
 
         return color
+    
+
+
 
 
 class KITTIRAWDataset(KITTIDataset):

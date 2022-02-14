@@ -14,6 +14,6 @@ else
     python -m manydepth.train \
         --data_path /data/kitti \
         --log_dir ./log_dir/  \
-        --model_name 01_kitti_mr \
-        --num_workers 
+        --model_name 01_kitti_mr_semi_supervise \
+        --num_workers 12
 fi

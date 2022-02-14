@@ -4,3 +4,4 @@ __pycache__
 assets/test_sequence_target_costvol_min_multi.jpeg
 assets/test_sequence_target_disp_multi.npy
 assets/test_sequence_target_disp_multi.jpeg
+**/*.npz

@@ -57,6 +57,8 @@ class Trainer:
         self.num_input_frames = len(self.opt.frame_ids)
         self.num_pose_frames = 2
 
+        self.lambda_supervised = 0.1
+
         assert self.opt.frame_ids[0] == 0, "frame_ids must start with 0"
         assert len(self.opt.frame_ids) > 1, "frame_ids must have more than 1 frame specified"
 
@@ -576,6 +578,16 @@ class Trainer:
         mask *= ((mono_output - matching_depth) / matching_depth) < 1.0
         return mask[:, 0]
 
+
+    def compute_supervised_loss(self, pred, target):
+        h, w = target.shape[-2:]
+        mask = target != 0
+
+        pred = F.interpolate(pred, (h,w  ))
+        loss = torch.abs(pred-target)
+        loss = loss[mask].sum()/mask.sum()
+        return loss
+
     def compute_losses(self, inputs, outputs, is_multi=False):
         """Compute the reprojection, smoothness and proxy supervised losses for a minibatch
         """
@@ -595,9 +607,12 @@ class Trainer:
             color = inputs[("color", 0, scale)]
             target = inputs[("color", 0, source_scale)]
 
+
             for frame_id in self.opt.frame_ids[1:]:
+                # The actual loss is the difference between reprojected image of previous image and current image
                 pred = outputs[("color", frame_id, scale)]
-                reprojection_losses.append(self.compute_reprojection_loss(pred, target))
+                reprojection_loss = self.compute_reprojection_loss(pred, target)
+                reprojection_losses.append(reprojection_loss)
             reprojection_losses = torch.cat(reprojection_losses, 1)
 
             if not self.opt.disable_automasking:
@@ -649,6 +664,9 @@ class Trainer:
             reprojection_loss = reprojection_loss * reprojection_loss_mask
             reprojection_loss = reprojection_loss.sum() / (reprojection_loss_mask.sum() + 1e-7)
 
+            pred_depth = outputs[("depth", 0, scale)] #1/disp
+            supervised_loss = self.lambda_supervised * self.compute_supervised_loss(pred_depth, inputs['depth_gt'])
+
             # consistency loss:
             # encourage multi frame prediction to be like singe frame where masking is happening
             if is_multi:
@@ -668,8 +686,9 @@ class Trainer:
                 consistency_loss = 0
 
             losses['reproj_loss/{}'.format(scale)] = reprojection_loss
+            losses['supervised_loss/{}'.format(scale)] = supervised_loss
 
-            loss += reprojection_loss + consistency_loss
+            loss += reprojection_loss + consistency_loss + supervised_loss
 
             mean_disp = disp.mean(2, True).mean(3, True)
             norm_disp = disp / (mean_disp + 1e-7)

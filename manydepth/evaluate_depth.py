@@ -5,6 +5,7 @@
 # available in the LICENSE file.
 
 import os
+from loguru import logger
 os.environ["MKL_NUM_THREADS"] = "1"  # noqa F402
 os.environ["NUMEXPR_NUM_THREADS"] = "1"  # noqa F402
 os.environ["OMP_NUM_THREADS"] = "1"  # noqa F402
@@ -19,6 +20,8 @@ from .options import MonodepthOptions
 from manydepth import datasets, networks
 from .layers import transformation_from_parameters, disp_to_depth
 import tqdm
+from avcv.visualize import *
+import torch.nn.functional as F
 
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
@@ -248,8 +251,17 @@ def evaluate(opt):
                                                            min_depth_bin, max_depth_bin)
                     output = depth_decoder(output)
 
-                pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
+                pred_disp, pred_depth = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
+
+                # h, w = data['depth_gt'].shape[-2:
+                # input_color = F.interpolate(input_color, (h,w))
+                # pred = F.interpolate(pred_depth, (h,w))[0,0].cpu().numpy()
+                # img = tensor2imgs(input_color.cpu(), 'bchw')[0]
+
+                # cv2.imwrite('pred.png', pred) 
+                # cv2.imwrite('color.jpg', img) 
+                # import ipdb; ipdb.set_trace()
                 pred_disps.append(pred_disp)
 
         pred_disps = np.concatenate(pred_disps)
@@ -305,6 +317,7 @@ def evaluate(opt):
         gt_depths = os.path.join(splits_dir, opt.eval_split, "gt_depths")
     else:
         gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
+        logger.info(f'Loading gt_depths from {gt_path}')
         gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)["data"]
 
     print("-> Evaluating")
@@ -368,7 +381,6 @@ def evaluate(opt):
 
         pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
         pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
-
         errors.append(compute_errors(gt_depth, pred_depth))
 
     if opt.save_pred_disps:
