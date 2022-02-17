@@ -6,6 +6,9 @@
 
 import os
 import json
+from loguru import logger
+from glob import glob
+from tqdm import tqdm
 import argparse
 import numpy as np
 import PIL.Image as pil
@@ -13,10 +16,11 @@ import matplotlib as mpl
 import matplotlib.cm as cm
 
 import torch
+import mmcv
 from torchvision import transforms
 
 from manydepth import networks
-from .layers import transformation_from_parameters
+from .layers import transformation_from_parameters, disp_to_depth
 
 
 def parse_args():
@@ -32,6 +36,8 @@ def parse_args():
                         required=True)
     parser.add_argument('--model_path', type=str,
                         help='path to a folder of weights to load', required=True)
+    parser.add_argument('--output_dir', type=str, default='outputs_manydepth/')
+    parser.add_argument('--save_npy', default=False, action='store_true')
     parser.add_argument('--mode', type=str, default='multi', choices=('multi', 'mono'),
                         help='"multi" or "mono". If set to "mono" then the network is run without '
                              'the source image, e.g. as described in Table 5 of the paper.',
@@ -73,12 +79,14 @@ def test_simple(args):
     assert args.model_path is not None, \
         "You must specify the --model_path parameter"
 
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device(
+        "cuda") if torch.cuda.is_available() else torch.device("cpu")
     print("-> Loading model from ", args.model_path)
 
     # Loading pretrained model
     print("   Loading pretrained encoder")
-    encoder_dict = torch.load(os.path.join(args.model_path, "encoder.pth"), map_location=device)
+    encoder_dict = torch.load(os.path.join(
+        args.model_path, "encoder.pth"), map_location=device)
     encoder = networks.ResnetEncoderMatching(18, False,
                                              input_width=encoder_dict['width'],
                                              input_height=encoder_dict['height'],
@@ -88,19 +96,23 @@ def test_simple(args):
                                              depth_binning='linear',
                                              num_depth_bins=96)
 
-    filtered_dict_enc = {k: v for k, v in encoder_dict.items() if k in encoder.state_dict()}
+    filtered_dict_enc = {
+        k: v for k, v in encoder_dict.items() if k in encoder.state_dict()}
     encoder.load_state_dict(filtered_dict_enc)
 
     print("   Loading pretrained decoder")
-    depth_decoder = networks.DepthDecoder(num_ch_enc=encoder.num_ch_enc, scales=range(4))
+    depth_decoder = networks.DepthDecoder(
+        num_ch_enc=encoder.num_ch_enc, scales=range(4))
 
-    loaded_dict = torch.load(os.path.join(args.model_path, "depth.pth"), map_location=device)
+    loaded_dict = torch.load(os.path.join(
+        args.model_path, "depth.pth"), map_location=device)
     depth_decoder.load_state_dict(loaded_dict)
 
     print("   Loading pose network")
     pose_enc_dict = torch.load(os.path.join(args.model_path, "pose_encoder.pth"),
                                map_location=device)
-    pose_dec_dict = torch.load(os.path.join(args.model_path, "pose.pth"), map_location=device)
+    pose_dec_dict = torch.load(os.path.join(
+        args.model_path, "pose.pth"), map_location=device)
 
     pose_enc = networks.ResnetEncoder(18, False, num_input_images=2)
     pose_dec = networks.PoseDecoder(pose_enc.num_ch_enc, num_input_features=1,
@@ -121,68 +133,102 @@ def test_simple(args):
         pose_dec.cuda()
 
     # Load input data
-    input_image, original_size = load_and_preprocess_image(args.target_image_path,
-                                                           resize_width=encoder_dict['width'],
-                                                           resize_height=encoder_dict['height'])
+    def process(target_image_path, source_image_path, frame_id=None):
+        input_image, original_size = load_and_preprocess_image(target_image_path,
+                                                               resize_width=encoder_dict['width'],
+                                                               resize_height=encoder_dict['height'])
 
-    source_image, _ = load_and_preprocess_image(args.source_image_path,
-                                                resize_width=encoder_dict['width'],
-                                                resize_height=encoder_dict['height'])
+        source_image, _ = load_and_preprocess_image(source_image_path,
+                                                    resize_width=encoder_dict['width'],
+                                                    resize_height=encoder_dict['height'])
 
-    K, invK = load_and_preprocess_intrinsics(args.intrinsics_json_path,
-                                             resize_width=encoder_dict['width'],
-                                             resize_height=encoder_dict['height'])
+        K, invK = load_and_preprocess_intrinsics(args.intrinsics_json_path,
+                                                 resize_width=encoder_dict['width'],
+                                                 resize_height=encoder_dict['height'])
 
-    with torch.no_grad():
+        with torch.no_grad():
 
-        # Estimate poses
-        pose_inputs = [source_image, input_image]
-        pose_inputs = [pose_enc(torch.cat(pose_inputs, 1))]
-        axisangle, translation = pose_dec(pose_inputs)
-        pose = transformation_from_parameters(axisangle[:, 0], translation[:, 0], invert=True)
+            # Estimate poses
+            pose_inputs = [source_image, input_image]
+            pose_inputs = [pose_enc(torch.cat(pose_inputs, 1))]
+            axisangle, translation = pose_dec(pose_inputs)
+            pose = transformation_from_parameters(
+                axisangle[:, 0], translation[:, 0], invert=True)
 
-        if args.mode == 'mono':
-            pose *= 0  # zero poses are a signal to the encoder not to construct a cost volume
-            source_image *= 0
+            if args.mode == 'mono':
+                pose *= 0  # zero poses are a signal to the encoder not to construct a cost volume
+                source_image *= 0
 
-        # Estimate depth
-        output, lowest_cost, _ = encoder(current_image=input_image,
-                                         lookup_images=source_image.unsqueeze(1),
-                                         poses=pose.unsqueeze(1),
-                                         K=K,
-                                         invK=invK,
-                                         min_depth_bin=encoder_dict['min_depth_bin'],
-                                         max_depth_bin=encoder_dict['max_depth_bin'])
+            # Estimate depth
+            output, lowest_cost, _ = encoder(current_image=input_image,
+                                             lookup_images=source_image.unsqueeze(
+                                                 1),
+                                             poses=pose.unsqueeze(1),
+                                             K=K,
+                                             invK=invK,
+                                             min_depth_bin=encoder_dict['min_depth_bin'],
+                                             max_depth_bin=encoder_dict['max_depth_bin'])
 
-        output = depth_decoder(output)
+            output = depth_decoder(output)
 
-        sigmoid_output = output[("disp", 0)]
-        sigmoid_output_resized = torch.nn.functional.interpolate(
-            sigmoid_output, original_size, mode="bilinear", align_corners=False)
-        sigmoid_output_resized = sigmoid_output_resized.cpu().numpy()[:, 0]
-        depth
+            sigmoid_output = output[("disp", 0)]
+            min_depth = 0.1
+            max_depth = 100
+            _, pred_depth = disp_to_depth(
+                output[("disp", 0)], min_depth, max_depth)
+            # pred_depth = 33*pred_depth
+            pred_depth = torch.nn.functional.interpolate(
+                pred_depth, original_size).squeeze().cpu().numpy()
 
-        # Saving numpy file
-        directory, filename = os.path.split(args.target_image_path)
-        output_name = os.path.splitext(filename)[0]
-        name_dest_npy = os.path.join(directory, "{}_disp_{}.npy".format(output_name, args.mode))
-        np.save(name_dest_npy, sigmoid_output.cpu().numpy())
+            sigmoid_output_resized = torch.nn.functional.interpolate(
+                sigmoid_output, original_size, mode="bilinear", align_corners=False)
+            sigmoid_output_resized = sigmoid_output_resized.cpu().numpy()[:, 0]
 
-        # Saving colormapped depth image and cost volume argmin
-        for plot_name, toplot in (('costvol_min', lowest_cost), ('disp', sigmoid_output_resized)):
-            toplot = toplot.squeeze()
-            normalizer = mpl.colors.Normalize(vmin=toplot.min(), vmax=np.percentile(toplot, 95))
-            mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
-            colormapped_im = (mapper.to_rgba(toplot)[:, :, :3] * 255).astype(np.uint8)
-            im = pil.fromarray(colormapped_im)
+            # Saving numpy file
+            _, filename = os.path.split(args.target_image_path)
+            output_dir = args.output_dir
+            os.makedirs(output_dir, exist_ok=True)
+            output_name = os.path.splitext(filename)[0]
+            if args.save_npy:
+                name_dest_npy = os.path.join(
+                    output_dir, "{}_disp_{}.npy".format(output_name, args.mode))
+                np.save(name_dest_npy, sigmoid_output.cpu().numpy())
 
-            name_dest_im = os.path.join(directory,
-                                        "{}_{}_{}.jpeg".format(output_name, plot_name, args.mode))
-            im.save(name_dest_im)
+            # Saving colormapped depth image and cost volume argmin
+            # plots = (('costvol_min', lowest_cost), ('disp', sigmoid_output_resized))
+            plots = (('disp', sigmoid_output_resized),)
+            for plot_name, to_plot in plots:
+                to_plot = to_plot.squeeze()
+                normalizer = mpl.colors.Normalize(
+                    vmin=to_plot.min(), vmax=np.percentile(to_plot, 95))
+                mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+                colormapped_im = (mapper.to_rgba(to_plot)[
+                    :, :, :3] * 255).astype(np.uint8)
+                im = pil.fromarray(colormapped_im)
+                name = os.path.basename(source_image_path)
+                # name_dest_im = os.path.join(output_dir,
+                #                             "{}_{}_{}.jpeg".format(output_name, plot_name, args.mode))
+                name_dest_im = os.path.join(output_dir, name)
+                # name_dest_pred = name_dest_im.replace('.jpeg', '_pred.png')
+                mmcv.imwrite(pred_depth, name_dest_im)
+                # im.save(name_dest_im)
 
-            print("-> Saved output image to {}".format(name_dest_im))
+                print("-> Saved output image to {}".format(name_dest_im))
 
-    print('-> Done!')
+        print('-> Done!')
+
+    if os.path.isdir(args.source_image_path):
+        logger.info('Infer the whole folder images instead')
+        source_image_paths = glob(os.path.join(args.source_image_path, '*'))
+        source_image_paths = list(sorted(source_image_paths))
+
+        for i, target_image_path in tqdm(enumerate(source_image_paths)):
+            if i == 0:
+                continue
+            source_image_path = source_image_paths[i-1]
+            process(target_image_path, source_image_path )
+    else:
+        process(args.target_image_path, args.source_image_path)
 
 
 if __name__ == '__main__':
