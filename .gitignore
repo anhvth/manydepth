@@ -9,3 +9,4 @@ manydepth/test_simple.py
 data
 outputs_manydepth/
 assets/*.png
+.cache

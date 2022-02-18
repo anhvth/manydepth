@@ -101,6 +101,14 @@ class Trainer:
             networks.ResnetEncoder(18, self.opt.weights_init == "pretrained")
         self.models["mono_encoder"].to(self.device)
 
+
+        self.models["depth_encoder"] = \
+            networks.ResnetEncoder(18, self.opt.weights_init == "pretrained")
+        self.models["depth_encoder"] .encoder.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        self.models["depth_encoder"].to(self.device)
+        self.silu = torch.nn.SiLU().to(self.device)
+
+
         self.models["mono_depth"] = \
             networks.DepthDecoder(self.models["mono_encoder"].num_ch_enc, self.opt.scales)
         self.models["mono_depth"].to(self.device)
@@ -340,11 +348,24 @@ class Trainer:
         # single frame path
         if self.train_teacher_and_pose:
             feats = self.models["mono_encoder"](inputs["color_aug", 0, 0])
-            mono_outputs.update(self.models['mono_depth'](feats))
+
+            inp = F.interpolate(inputs['depth_gt'], inputs["color_aug", 0, 0].shape[-2:])
+            depth_feats = self.models["depth_encoder"](inp)
+            fuse_feats = []
+            for i in range(len(feats)):
+                fuse_feat = feats[i]+self.silu(depth_feats[i])
+                fuse_feats += [fuse_feat]
+            mono_outputs.update(self.models['mono_depth'](fuse_feats))
         else:
             with torch.no_grad():
                 feats = self.models["mono_encoder"](inputs["color_aug", 0, 0])
-                mono_outputs.update(self.models['mono_depth'](feats))
+                inp = F.interpolate(inputs['depth_gt'], inputs["color_aug", 0, 0].shape[-2:])
+                depth_feats = self.models["depth_encoder"](inp)
+                fuse_feats = []
+                for i in range(len(feats)):
+                    fuse_feat = feats[i]+self.silu(depth_feats[i])
+                    fuse_feats += [fuse_feat]
+                mono_outputs.update(self.models['mono_depth'](fuse_feats))
 
         self.generate_images_pred(inputs, mono_outputs)
         mono_losses = self.compute_losses(inputs, mono_outputs, is_multi=False)
@@ -842,7 +863,7 @@ class Trainer:
 
     def load_mono_model(self):
 
-        model_list = ['pose_encoder', 'pose', 'mono_encoder', 'mono_depth']
+        model_list = ['pose_encoder', 'pose', 'mono_encoder', 'mono_depth', 'depth_encoder']
         for n in model_list:
             print('loading {}'.format(n))
             path = os.path.join(self.opt.mono_weights_folder, "{}.pth".format(n))
